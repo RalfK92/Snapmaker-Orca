@@ -8,6 +8,8 @@ rename-icon: Snapmaker_Orca
 finish-args:
   - --share=ipc
   - --socket=x11
+  - --socket=wayland
+  - --socket=fallback-x11
   - --share=network
   - --device=all
   - --filesystem=home

@@ -12,6 +12,8 @@
 #include <wx/osx/webview_webkit.h>
 #endif
 #include <wx/uri.h>
+#include <wx/stdpaths.h>
+#include <wx/filename.h>
 #if defined(__WIN32__) || defined(__WXMAC__)
 #include "wx/private/jsscriptwrapper.h"
 #endif
@@ -31,6 +33,12 @@
 #define WEBKIT_API
 struct WebKitWebView;
 struct WebKitJavascriptResult;
+struct WebKitWebContext;
+struct WebKitCookieManager;
+typedef enum {
+    WEBKIT_COOKIE_PERSISTENT_STORAGE_TEXT    = 0,
+    WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE  = 1,
+} WebKitCookiePersistentStorage;
 extern "C" {
 WEBKIT_API void
 webkit_web_view_run_javascript                       (WebKitWebView             *web_view,
@@ -44,6 +52,14 @@ webkit_web_view_run_javascript_finish                (WebKitWebView             
 						      GError                    **error);
 WEBKIT_API void
 webkit_javascript_result_unref              (WebKitJavascriptResult *js_result);
+WEBKIT_API WebKitWebContext *
+webkit_web_view_get_context                          (WebKitWebView             *web_view);
+WEBKIT_API WebKitCookieManager *
+webkit_web_context_get_cookie_manager                (WebKitWebContext          *context);
+WEBKIT_API void
+webkit_cookie_manager_set_persistent_storage         (WebKitCookieManager       *cookie_manager,
+                                                      const gchar               *filename,
+                                                      WebKitCookiePersistentStorage storage);
 }
 #endif
 
@@ -295,6 +311,20 @@ wxWebView* WebView::CreateWebView(wxWindow * parent, wxString const & url)
         webView->Create(parent, wxID_ANY, url2, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
         webView->SetUserAgent(wxString::Format("SM-Slicer/v%s (%s) Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)", SLIC3R_VERSION,
                                                Slic3r::GUI::wxGetApp().dark_mode() ? "dark" : "light"));
+#if defined(__linux__)
+        {
+            // WebKitGTK does not persist cookies by default — fix for issue #716.
+            WebKitWebView *wkView = (WebKitWebView *) webView->GetNativeBackend();
+            WebKitWebContext *wkCtx = webkit_web_view_get_context(wkView);
+            WebKitCookieManager *cookieMgr = webkit_web_context_get_cookie_manager(wkCtx);
+            wxString cookiePath = Slic3r::GUI::from_u8(Slic3r::data_dir()) + "/cookies.sqlite";
+            webkit_cookie_manager_set_persistent_storage(
+                cookieMgr,
+                cookiePath.ToUTF8().data(),
+                WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE
+            );
+        }
+#endif
 #endif
 #ifdef __WXMAC__
         WKWebView * wkWebView = (WKWebView *) webView->GetNativeBackend();

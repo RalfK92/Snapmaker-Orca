@@ -4,6 +4,20 @@
 grep -q org.freedesktop.Platform.GL.nvidia /.flatpak-info && export WEBKIT_DISABLE_DMABUF_RENDERER=1
 
 # Work-around https://github.com/bambulab/BambuStudio/issues/3440
-export LC_ALL=C.UTF-8
+# C.UTF-8 ensures UTF-8 encoding for non-ASCII text, but is not a valid BCP-47
+# language tag — Flutter's Dart engine rejects it with "invalid language tag".
+# Use system locale if set, fall back to en_US.UTF-8; never use C.UTF-8.
+unset LC_ALL
+[ -n "$LANG" ] || export LANG=en_US.UTF-8
+
+# Provide CA bundle so the TLS-acceptance dialog is skipped on first launch.
+# OPENSSL_CERT_OVERRIDE is compiled in for static builds; without SSL_CERT_FILE
+# the app shows an interactive dialog and exits if it can't be displayed.
+for _ca in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+    if [ -f "$_ca" ]; then
+        export SSL_CERT_FILE="$_ca"
+        break
+    fi
+done
 
 exec /app/bin/snapmaker-orca "$@"
