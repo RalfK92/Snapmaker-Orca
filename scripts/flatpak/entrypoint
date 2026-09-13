@@ -10,6 +10,30 @@ grep -q org.freedesktop.Platform.GL.nvidia /.flatpak-info && export WEBKIT_DISAB
 unset LC_ALL
 [ -n "$LANG" ] || export LANG=en_US.UTF-8
 
+# Work-around broken/partial host locale configs (e.g. KDE regional settings
+# exporting a per-category locale, such as LC_TIME=en_AT.UTF-8, that was never
+# generated on the host). systemd --user services (how app launchers start
+# flatpaks) inherit these as-is, and glibc's newlocale() aborts the process
+# with "locale::facet::_S_create_c_locale name not valid" if the requested
+# locale isn't installed — this only reproduces via the app launcher because
+# an interactive shell's env doesn't carry the same broken LC_* values.
+# Drop any LC_* category not present in `locale -a` so it falls back to LANG.
+# Normalize (lowercase, strip '-') before comparing: `locale -a` lists names
+# like "en_AT.utf8" while env vars conventionally use "en_AT.UTF-8".
+_available_locales="$(locale -a 2>/dev/null | tr 'A-Z' 'a-z' | tr -d '-')"
+for _cat in LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES \
+            LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT \
+            LC_IDENTIFICATION; do
+    eval "_val=\$$_cat"
+    if [ -n "$_val" ]; then
+        _norm_val="$(printf '%s' "$_val" | tr 'A-Z' 'a-z' | tr -d '-')"
+        if ! printf '%s\n' "$_available_locales" | grep -qFx "$_norm_val"; then
+            unset "$_cat"
+        fi
+    fi
+done
+unset _available_locales _cat _val _norm_val
+
 # Provide CA bundle so the TLS-acceptance dialog is skipped on first launch.
 # OPENSSL_CERT_OVERRIDE is compiled in for static builds; without SSL_CERT_FILE
 # the app shows an interactive dialog and exits if it can't be displayed.
