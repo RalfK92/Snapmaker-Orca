@@ -49,3 +49,6 @@ sentry-native/
 .claude/
 .hermes/
 CLAUDE.md
+
+# Locally built Flatpak bundles
+*.flatpak

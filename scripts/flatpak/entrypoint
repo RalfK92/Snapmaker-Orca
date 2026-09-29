@@ -6,9 +6,9 @@ grep -q org.freedesktop.Platform.GL.nvidia /.flatpak-info && export WEBKIT_DISAB
 # Work-around https://github.com/bambulab/BambuStudio/issues/3440
 # C.UTF-8 ensures UTF-8 encoding for non-ASCII text, but is not a valid BCP-47
 # language tag — Flutter's Dart engine rejects it with "invalid language tag".
-# Use system locale if set, fall back to en_US.UTF-8; never use C.UTF-8.
+# Use system locale if set, fall back to en_US.UTF-8; C.UTF-8 only as a last
+# resort (see below) since a startup crash is worse than a Flutter warning.
 unset LC_ALL
-[ -n "$LANG" ] || export LANG=en_US.UTF-8
 
 # Work-around broken/partial host locale configs (e.g. KDE regional settings
 # exporting a per-category locale, such as LC_TIME=en_AT.UTF-8, that was never
@@ -17,22 +17,35 @@ unset LC_ALL
 # with "locale::facet::_S_create_c_locale name not valid" if the requested
 # locale isn't installed — this only reproduces via the app launcher because
 # an interactive shell's env doesn't carry the same broken LC_* values.
-# Drop any LC_* category not present in `locale -a` so it falls back to LANG.
+# Drop any LC_* category not present in `locale -a` so it falls back to LANG,
+# and replace LANG itself if it names a missing locale.
 # Normalize (lowercase, strip '-') before comparing: `locale -a` lists names
 # like "en_AT.utf8" while env vars conventionally use "en_AT.UTF-8".
 _available_locales="$(locale -a 2>/dev/null | tr 'A-Z' 'a-z' | tr -d '-')"
+_locale_available() {
+    # If the list can't be determined, trust the environment.
+    [ -z "$_available_locales" ] && return 0
+    printf '%s\n' "$_available_locales" | grep -qFx "$(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d '-')"
+}
+
+if [ -z "$LANG" ] || ! _locale_available "$LANG"; then
+    if _locale_available en_US.UTF-8; then
+        export LANG=en_US.UTF-8
+    else
+        export LANG=C.UTF-8
+    fi
+fi
+
 for _cat in LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES \
             LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT \
             LC_IDENTIFICATION; do
     eval "_val=\$$_cat"
-    if [ -n "$_val" ]; then
-        _norm_val="$(printf '%s' "$_val" | tr 'A-Z' 'a-z' | tr -d '-')"
-        if ! printf '%s\n' "$_available_locales" | grep -qFx "$_norm_val"; then
-            unset "$_cat"
-        fi
+    if [ -n "$_val" ] && ! _locale_available "$_val"; then
+        unset "$_cat"
     fi
 done
-unset _available_locales _cat _val _norm_val
+unset _available_locales _cat _val
+unset -f _locale_available
 
 # Provide CA bundle so the TLS-acceptance dialog is skipped on first launch.
 # OPENSSL_CERT_OVERRIDE is compiled in for static builds; without SSL_CERT_FILE
