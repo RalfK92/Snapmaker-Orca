@@ -71,7 +71,10 @@ SliceModePopup::SliceModePopup(wxWindow *parent)
 SliceModePopup::~SliceModePopup()
 {
 #ifdef __WXGTK__
-    wxGetTopLevelParent(GetParent())->Unbind(wxEVT_ACTIVATE, &SliceModePopup::on_top_window_activate, this);
+    // On app shutdown the parent chain may already be torn down, so the
+    // top-level window can be null here.
+    if (wxWindow *top = wxGetTopLevelParent(GetParent()))
+        top->Unbind(wxEVT_ACTIVATE, &SliceModePopup::on_top_window_activate, this);
 #endif
 }
 
