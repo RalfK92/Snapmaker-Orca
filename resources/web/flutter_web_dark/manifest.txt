@@ -1,0 +1,6 @@
+b447472c images/controlDefault.png
+e42b1a2a images/deviceNotConnected.webp
+3cf0d614 images/printtaskDefault.png
+feb1f547 images/defaultGcode.webp
+8210ca77 images/gcodeCover.png
+d47c8e62 images/defaultEmpty.png
