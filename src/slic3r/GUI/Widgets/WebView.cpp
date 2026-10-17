@@ -3,6 +3,7 @@
 #include "slic3r/Utils/MacDarkMode.hpp"
 
 #include <algorithm>
+#include <boost/filesystem/path.hpp>
 #include <boost/log/trivial.hpp>
 
 #include <wx/webviewarchivehandler.h>
@@ -21,6 +22,7 @@
 
 #if defined(__linux__)
 #include <mutex>
+#include <set>
 #endif
 
 #ifdef __WIN32__
@@ -32,6 +34,12 @@
 #define WEBKIT_API
 struct WebKitWebView;
 struct WebKitJavascriptResult;
+struct WebKitWebContext;
+struct WebKitCookieManager;
+typedef enum {
+    WEBKIT_COOKIE_PERSISTENT_STORAGE_TEXT    = 0,
+    WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE  = 1,
+} WebKitCookiePersistentStorage;
 extern "C" {
 WEBKIT_API void
 webkit_web_view_run_javascript                       (WebKitWebView             *web_view,
@@ -45,6 +53,31 @@ webkit_web_view_run_javascript_finish                (WebKitWebView             
 						      GError                    **error);
 WEBKIT_API void
 webkit_javascript_result_unref              (WebKitJavascriptResult *js_result);
+WEBKIT_API WebKitWebContext *
+webkit_web_context_get_default                       (void);
+WEBKIT_API WebKitWebContext *
+webkit_web_view_get_context                          (WebKitWebView             *web_view);
+WEBKIT_API WebKitCookieManager *
+webkit_web_context_get_cookie_manager                (WebKitWebContext          *context);
+WEBKIT_API void
+webkit_cookie_manager_set_persistent_storage         (WebKitCookieManager       *cookie_manager,
+                                                      const gchar               *filename,
+                                                      WebKitCookiePersistentStorage storage);
+}
+
+// WebKitGTK keeps cookies in memory only unless a persistent store is configured,
+// so the login session is lost on every restart (issue #716).
+// Configure each context only once: every call swaps the cookie jar, which would
+// drop session cookies (those without an expiry date are not written to the DB).
+static void enable_persistent_cookies(WebKitWebContext *context)
+{
+    static std::set<WebKitWebContext *> s_configured;
+    if (context == nullptr || !s_configured.insert(context).second)
+        return;
+    std::string path = (boost::filesystem::path(Slic3r::data_dir()) / "cookies.sqlite").string();
+    webkit_cookie_manager_set_persistent_storage(webkit_web_context_get_cookie_manager(context), path.c_str(),
+                                                 WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+    BOOST_LOG_TRIVIAL(info) << "WebKit cookie storage: " << path;
 }
 #endif
 
@@ -404,6 +437,10 @@ wxWebView* WebView::CreateWebView(wxWindow * parent, wxString const & url)
         webView->RegisterHandler(wxSharedPtr<wxWebViewHandler>(new wxWebViewArchiveHandler("wxfs")));
         webView->RegisterHandler(wxSharedPtr<wxWebViewHandler>(new wxWebViewFSHandler("memory")));
 #endif
+#if defined(__linux__)
+        // Configure cookie storage before Create() starts loading the first URL.
+        enable_persistent_cookies(webkit_web_context_get_default());
+#endif
 #ifdef __WXMAC__
         // WKWebView starts loading during Create(), before the delayed handler callback runs.
         // Keep its initial document blank; the subclass flushes the pending URL after installation.
@@ -414,6 +451,10 @@ wxWebView* WebView::CreateWebView(wxWindow * parent, wxString const & url)
 #endif
         webView->SetUserAgent(wxString::Format("SM-Slicer/v%s (%s) Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)", SLIC3R_VERSION,
                                                Slic3r::GUI::wxGetApp().dark_mode() ? "dark" : "light"));
+#if defined(__linux__)
+        // Normally a no-op: the view uses the default context, configured before Create().
+        enable_persistent_cookies(webkit_web_view_get_context((WebKitWebView *) webView->GetNativeBackend()));
+#endif
 #endif
 #ifdef __WXMAC__
         WKWebView * wkWebView = (WKWebView *) webView->GetNativeBackend();
