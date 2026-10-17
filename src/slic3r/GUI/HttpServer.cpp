@@ -1,4 +1,5 @@
 #include "HttpServer.hpp"
+#include "FlutterWebDark.hpp"
 #include <boost/log/trivial.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/filesystem.hpp>
@@ -1095,14 +1096,17 @@ void HttpServer::ResponseNotFound::write_response(std::stringstream& ssOut)
 
 void HttpServer::ResponseFile::write_response(std::stringstream& ssOut)
 {
+    // Dark mode files of the Flutter web UI are derived from the light ones.
+    const FlutterWebDark::Resolved source = m_native_path ? FlutterWebDark::Resolved{file_path} : FlutterWebDark::resolve(file_path);
+
     std::ifstream file;
     if (m_native_path) {
         file.open(file_path, std::ios::binary);
     } else {
-        std::string system_file_path = utf8_to_filesystem_encoding(file_path);
+        std::string system_file_path = utf8_to_filesystem_encoding(source.path);
         file.open(system_file_path, std::ios::binary);
         if (!file) {
-            file.open(file_path, std::ios::binary);
+            file.open(source.path, std::ios::binary);
         }
     }
     if (!file) {
@@ -1114,10 +1118,10 @@ void HttpServer::ResponseFile::write_response(std::stringstream& ssOut)
     // 读取文件内容并计算长度（关键：使用字节长度）
     std::ostringstream fileStream;
     fileStream << file.rdbuf();
-    std::string fileContent    = fileStream.str();
+    std::string fileContent    = FlutterWebDark::apply(source.kind, source.path, fileStream.str());
     size_t      content_length = fileContent.size(); // 字节长度，非字符数
 
-    const std::time_t last_write_time = get_file_last_write_time(file_path, m_native_path);
+    const std::time_t last_write_time = get_file_last_write_time(source.path, m_native_path);
     const bool        can_revalidate  = last_write_time >= 0;
     std::string       last_modified   = can_revalidate ? format_http_date(last_write_time) : "";
     std::string       etag            = can_revalidate ? make_etag(last_write_time, content_length) : "";
