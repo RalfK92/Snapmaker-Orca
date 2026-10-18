@@ -2,6 +2,7 @@
 #include "libslic3r/AllowlistManager.hpp"
 #include "libslic3r/FilamentHotBedNozzleRules.hpp"
 #include "GUI_App.hpp"
+#include "DeviceReconnect.hpp"
 #include "GUI_Init.hpp"
 #include "GUI_ObjectList.hpp"
 #include "GUI_Factories.hpp"
@@ -7746,6 +7747,9 @@ void GUI_App::start_download(std::string url)
 }
 
 void GUI_App::SMUserInfo::notify() {
+    if (m_login)
+        DeviceReconnect::on_user_login(m_login_user_id);
+
     json data;
     if (m_login) {
         data["status"]   = "online";

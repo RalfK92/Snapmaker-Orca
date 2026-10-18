@@ -1,5 +1,6 @@
 // Implementation of web communication protocol for Slicer Studio
 #include "SSWCP.hpp"
+#include "DeviceReconnect.hpp"
 #include "FilamentColorUtils.hpp"
 #include "GUI_App.hpp"
 #include "MainFrame.hpp"
@@ -4472,6 +4473,10 @@ void SSWCP_MachineConnect_Instance::sw_get_connect_machine() {
 }
 
 void SSWCP_MachineConnect_Instance::sw_disconnect() {
+    // Disconnecting from the Device page is a deliberate choice: don't reconnect on the next start.
+    if (m_webview)
+        DeviceReconnect::forget();
+
     bool need_reload = m_param_data.count("need_reload") ? m_param_data["need_reload"].get<bool>() : true;
 
     std::string dev_id = m_param_data.count("dev_id") ? m_param_data["dev_id"] : "";
@@ -6931,6 +6936,8 @@ void SSWCP_MqttAgent_Instance::sw_create_mqtt_client()
         m_res_data["type"] = type;
         m_res_data["id"]   = std::to_string(int64_t(get_current_engine().get()));
 
+        DeviceReconnect::on_client_created(m_webview, m_param_data);
+
         SNAP_LOG_BATCH(Info, "mqtt client created",
             {"eventName", "mqtt_client_create"}, {"source", "cpp"},
             {"connectSessionId", session_id},
@@ -7622,6 +7629,8 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
                                             BOOST_LOG_TRIVIAL(error) << "[WCP] deviceFilamentInfo cache parse failed: " << e.what();
                                         }
                                     }
+
+                                    DeviceReconnect::on_engine_set(self->m_webview, self->m_param_data);
 
                                     auto mqtt_self = dynamic_pointer_cast<SSWCP_MqttAgent_Instance>(self);
                                     mqtt_self->clean_current_engine();

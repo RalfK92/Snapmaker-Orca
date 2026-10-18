@@ -310,6 +310,10 @@ void AppConfig::set_defaults()
         set_bool("auto_calculate", true);
     }
 
+    if (get("reconnect_last_device").empty()) {
+        set_bool("reconnect_last_device", true);
+    }
+
     if (get("remember_printer_config").empty()) {
         set_bool("remember_printer_config", true);
     }

@@ -237,6 +237,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/HMS.hpp
     GUI/HMSPanel.cpp
     GUI/HMSPanel.hpp
+    GUI/DeviceReconnect.cpp
+    GUI/DeviceReconnect.hpp
     GUI/HttpServer.cpp
     GUI/HttpServer.hpp
     GUI/FlutterWebDark.cpp
