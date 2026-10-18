@@ -207,6 +207,7 @@ private:
 
 public:    
     void update_filament_info(const json& objects, bool send_message = false);
+    bool apply_cached_device_filament_info();
 
 protected:
     std::thread m_work_thread; // Worker thread

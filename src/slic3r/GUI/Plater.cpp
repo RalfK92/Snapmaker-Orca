@@ -9199,7 +9199,7 @@ void Sidebar::sync_ams_list()
     Layout();
 }
 
-void Sidebar::show_sync_filament_dialog()
+void Sidebar::show_sync_filament_dialog(bool silent)
 {
     if (!wxGetApp().plater())
         return;
@@ -9219,6 +9219,8 @@ void Sidebar::show_sync_filament_dialog()
     }
 
     if (!host && !device_machine) {
+        if (silent)
+            return;
         SyncRichConfirmDialog dlg(this,
             _L("No printer is connected. Please connect your U1 from the Device page before syncing."),
             wxYES_NO);
@@ -9255,6 +9257,8 @@ void Sidebar::show_sync_filament_dialog()
         bool is_white_listed_type = white_list_machine_types.find(machine_info.model) != white_list_machine_types.end();
 
         if (got_machine_info && !machine_info.model.empty() && !is_white_listed_type) {
+            if (silent)
+                return;
             SyncRichConfirmDialog dlg(this,
                 _L("The connected printer is not U1. Unable to sync filament information. Please switch to U1 and try again."),
                 wxYES_NO);
@@ -9281,6 +9285,8 @@ void Sidebar::show_sync_filament_dialog()
         return false;
     };
     if (machineFilamentList.empty() || !nonEmptyFilaments(machineFilamentList)) {
+        if (silent)
+            return;
         SyncRichConfirmDialog dlg(this,
             _L("No filaments detected on the printer. Please preload the filaments before syncing."),
             wxOK);
@@ -9314,7 +9320,7 @@ void Sidebar::show_sync_filament_dialog()
     dlg.setHasMixedFilaments(preset_bundle->mixed_filaments.enabled_count() > 0);
     dlg.setMixedFilamentInfos(mixedInfos);
     {
-        if (wxGetApp().plater()->model().objects.empty()) {
+        if (silent || wxGetApp().plater()->model().objects.empty()) {
             dlg.setOverwriteMode();
         } else {
             dlg.CentreOnScreen();

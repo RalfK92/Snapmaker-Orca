@@ -181,7 +181,8 @@ public:
     void load_ams_list(std::string const & device, MachineObject* obj);
     std::map<int, DynamicPrintConfig> build_filament_ams_list(MachineObject* obj);
     void sync_ams_list();
-    void show_sync_filament_dialog();
+    // silent: apply the printer's filaments without any dialog (used after an automatic reconnect).
+    void show_sync_filament_dialog(bool silent = false);
     // Orca
     void show_SEMM_buttons(bool bshow);
     void update_dynamic_filament_list();

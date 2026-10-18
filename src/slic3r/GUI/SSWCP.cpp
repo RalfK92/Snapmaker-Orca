@@ -1150,6 +1150,8 @@ void SSWCP_Instance::sw_SetCache() {
                 std::string key = objects[i]["key"].get<std::string>();
                 m_wcp_cache[key] = objects[i]["value"];
                 wxGetApp().cache_notify(key, objects[i]["value"]);
+                if (key == "deviceFilamentInfo")
+                    DeviceReconnect::on_device_filament_info();
             }
 
             send_to_js();
@@ -1606,6 +1608,63 @@ void SSWCP_Instance::sw_Unsubscribe_Filter() {
 void SSWCP_Instance::on_timeout() {
     handle_general_fail(-2, "time out");
     finish_job();
+}
+
+// Apply the device filament info Flutter cached (sw_SetCache "deviceFilamentInfo")
+// for the connected printer. Returns true if it was applied.
+bool SSWCP_Instance::apply_cached_device_filament_info()
+{
+    bool applied = false;
+    if (m_wcp_cache.count("deviceFilamentInfo")) {
+        try {
+            // Flutter writers encode this cache value inconsistently:
+            // one path jsonEncodes the payload once, another encodes it
+            // twice. Unwrap the extra string layer instead of assuming
+            // an object with a "value" key (operator[] would throw).
+            json value;
+            std::string value_str;
+            if (m_wcp_cache["deviceFilamentInfo"].is_string()) {
+                value_str = m_wcp_cache["deviceFilamentInfo"].get<std::string>();
+                value     = json::parse(value_str);
+                if (value.is_string())
+                    value = json::parse(value.get<std::string>());
+            } else {
+                value = m_wcp_cache["deviceFilamentInfo"];
+            }
+
+            if (value.is_object() && value.contains("value") && value["value"].is_object()) {
+                json value_item            = value["value"];
+                auto machines     = wxGetApp().app_config->get_devices();
+                bool find                  = false;
+                for (auto& [key, value] : value_item.items()) {
+                    if (find) {
+                        break;
+                    }
+
+                    for (const auto& machine : machines) {
+                        if (machine.sn == key && machine.connected) {
+                            find = true;
+                            json target = json::array();
+                            json object = json::object();
+                            object["key"] = key;
+                            object["value"]    = value.dump();
+                            target.push_back(object);
+                            update_filament_info(target, false);
+                            applied = true;
+                            break;
+                        }
+                    }
+
+                }
+            } else {
+                BOOST_LOG_TRIVIAL(warning) << "[WCP] deviceFilamentInfo cache has unexpected format, skip. type=" << value.type_name()
+                                           << " raw=" << (value_str.empty() ? m_wcp_cache["deviceFilamentInfo"].dump() : value_str);
+            }
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "[WCP] deviceFilamentInfo cache parse failed: " << e.what();
+        }
+    }
+    return applied;
 }
 
 void SSWCP_Instance::update_filament_info(const json& objects, bool send_message)
@@ -7128,6 +7187,8 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_subscribe()
         }
         int qos = m_param_data["qos"].get<int>();
 
+        DeviceReconnect::on_subscribe(m_webview, topic, qos);
+
         std::weak_ptr<SSWCP_Instance> weak_ptr = shared_from_this();
         auto                          engine   = get_current_engine();
 
@@ -7581,54 +7642,7 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
 
                                     wxGetApp().app_config->clear_filament_extruder_map();
 
-                                    if (self->m_wcp_cache.count("deviceFilamentInfo")) {
-                                        try {
-                                            // Flutter writers encode this cache value inconsistently:
-                                            // one path jsonEncodes the payload once, another encodes it
-                                            // twice. Unwrap the extra string layer instead of assuming
-                                            // an object with a "value" key (operator[] would throw).
-                                            json value;
-                                            std::string value_str;
-                                            if (self->m_wcp_cache["deviceFilamentInfo"].is_string()) {
-                                                value_str = self->m_wcp_cache["deviceFilamentInfo"].get<std::string>();
-                                                value     = json::parse(value_str);
-                                                if (value.is_string())
-                                                    value = json::parse(value.get<std::string>());
-                                            } else {
-                                                value = self->m_wcp_cache["deviceFilamentInfo"];
-                                            }
-
-                                            if (value.is_object() && value.contains("value") && value["value"].is_object()) {
-                                                json value_item            = value["value"];
-                                                auto machines     = wxGetApp().app_config->get_devices();
-                                                bool find                  = false;
-                                                for (auto& [key, value] : value_item.items()) {
-                                                    if (find) {
-                                                        break;
-                                                    }
-
-                                                    for (const auto& machine : machines) {
-                                                        if (machine.sn == key && machine.connected) {
-                                                            find = true;
-                                                            json target = json::array();
-                                                            json object = json::object();
-                                                            object["key"] = key;
-                                                            object["value"]    = value.dump();
-                                                            target.push_back(object);
-                                                            self->update_filament_info(target, false);
-                                                            break;
-                                                        }
-                                                    }
-
-                                                }
-                                            } else {
-                                                BOOST_LOG_TRIVIAL(warning) << "[WCP] deviceFilamentInfo cache has unexpected format, skip. type=" << value.type_name()
-                                                                           << " raw=" << (value_str.empty() ? self->m_wcp_cache["deviceFilamentInfo"].dump() : value_str);
-                                            }
-                                        } catch (const std::exception& e) {
-                                            BOOST_LOG_TRIVIAL(error) << "[WCP] deviceFilamentInfo cache parse failed: " << e.what();
-                                        }
-                                    }
+                                    self->apply_cached_device_filament_info();
 
                                     DeviceReconnect::on_engine_set(self->m_webview, self->m_param_data);
 

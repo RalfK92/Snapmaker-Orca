@@ -2,6 +2,7 @@
 
 #include "GUI_App.hpp"
 #include "MainFrame.hpp"
+#include "Plater.hpp"
 #include "SSWCP.hpp"
 #include "slic3r/Utils/MQTT.hpp"
 
@@ -15,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 namespace Slic3r { namespace GUI { namespace DeviceReconnect {
 
@@ -32,11 +34,18 @@ const char *const SECRET_FIELDS[] = {"ca", "cert", "key", "username", "user", "p
 const int POLL_MS          = 250;
 const int STEP_TIMEOUT_MS  = 30000;
 
-// sw_create_mqtt_client parameters per webview, until the connection is completed.
-std::map<wxWebView *, json> g_pending_clients;
+// sw_create_mqtt_client parameters and the sw_mqtt_subscribe topics that followed,
+// per webview, until the connection is completed.
+struct PendingConnection
+{
+    json create;
+    json subscriptions = json::array();
+};
+std::map<wxWebView *, PendingConnection> g_pending_clients;
 std::mutex                  g_pending_mutex;
 
 bool g_reconnect_attempted = false;
+bool g_filament_sync_pending = false; // reconnected, waiting for the printer's filament info
 
 bool enabled() { return wxGetApp().app_config && wxGetApp().app_config->get_bool(ENABLED_KEY); }
 
@@ -120,12 +129,15 @@ bool device_connected(const std::string &sn)
     return false;
 }
 
-// Replays sw_create_mqtt_client -> sw_mqtt_connect -> sw_mqtt_set_engine without a
-// webview, polling for the result of each asynchronous step.
+// Replays sw_create_mqtt_client -> sw_mqtt_connect -> sw_mqtt_subscribe -> sw_mqtt_set_engine
+// without a webview, polling for the result of each asynchronous step. The printer
+// answers on the subscribed topics; without them every request would time out.
 class Replay : public wxTimer
 {
 public:
-    Replay(json create, json engine) : m_create(std::move(create)), m_engine(std::move(engine)) {}
+    Replay(json create, json subscriptions, json engine)
+        : m_create(std::move(create)), m_subscriptions(std::move(subscriptions)), m_engine(std::move(engine))
+    {}
 
     void start()
     {
@@ -150,8 +162,28 @@ public:
         if (m_stage == Stage::Connect) {
             auto engine = replay_engine();
             if (engine && engine->CheckConnected()) {
-                json params         = m_engine;
-                params["engine_id"] = m_engine_id;
+                m_stage   = Stage::Subscribe;
+                m_elapsed = 0;
+                int index = 0;
+                for (const auto &sub : m_subscriptions) {
+                    json params = {{"id", m_engine_id}, {"topic", sub.value("topic", "")}, {"qos", sub.value("qos", 1)}};
+                    m_subscribes.push_back(run("sw_mqtt_subscribe", params, "device_reconnect_" + std::to_string(index++)));
+                }
+                return;
+            }
+        } else if (m_stage == Stage::Subscribe) {
+            bool done = true;
+            for (const auto &sub : m_subscribes) {
+                if (!sub || sub->m_status != 200) {
+                    finish("subscribing to the printer topics failed");
+                    return;
+                }
+                // A subscribe instance records its event id in the header once the broker confirmed.
+                done = done && sub->m_header.contains("event_id");
+            }
+            if (done) {
+                json params           = m_engine;
+                params["engine_id"]   = m_engine_id;
                 params["need_reload"] = true;
                 m_stage   = Stage::SetEngine;
                 m_elapsed = 0;
@@ -160,6 +192,7 @@ public:
             }
         } else if (device_connected(m_engine.value("sn", ""))) {
             BOOST_LOG_TRIVIAL(warning) << "DeviceReconnect: reconnected to " << m_engine.value("sn", "");
+            g_filament_sync_pending = true;
             finish("");
             return;
         }
@@ -168,11 +201,11 @@ public:
     }
 
 private:
-    enum class Stage { Create, Connect, SetEngine };
+    enum class Stage { Create, Connect, Subscribe, SetEngine };
 
-    static std::shared_ptr<SSWCP_Instance> run(const std::string &cmd, const json &params)
+    static std::shared_ptr<SSWCP_Instance> run(const std::string &cmd, const json &params, const std::string &event_id = "")
     {
-        auto instance = SSWCP::create_sswcp_instance(cmd, json::object(), params, "", nullptr);
+        auto instance = SSWCP::create_sswcp_instance(cmd, json::object(), params, event_id, nullptr);
         if (instance)
             instance->process();
         return instance;
@@ -180,9 +213,10 @@ private:
 
     void finish(const std::string &error);
 
-    json                            m_create, m_engine;
-    std::string                     m_engine_id;
-    std::shared_ptr<SSWCP_Instance> m_step;
+    json                                         m_create, m_subscriptions, m_engine;
+    std::string                                  m_engine_id;
+    std::shared_ptr<SSWCP_Instance>              m_step;
+    std::vector<std::shared_ptr<SSWCP_Instance>> m_subscribes;
     Stage                           m_stage   = Stage::Create;
     int                             m_elapsed = 0;
 };
@@ -224,11 +258,12 @@ void start_replay()
         return;
     }
     json create = stored.value("create", json::object()), engine = stored.value("engine", json::object());
+    json subscriptions = stored.value("subscribe", json::array());
     merge_secrets(create, secrets.value("create", json::object()));
     merge_secrets(engine, secrets.value("engine", json::object()));
 
     BOOST_LOG_TRIVIAL(warning) << "DeviceReconnect: reconnecting to " << engine.value("sn", "");
-    g_replay = std::make_unique<Replay>(std::move(create), std::move(engine));
+    g_replay = std::make_unique<Replay>(std::move(create), std::move(subscriptions), std::move(engine));
     g_replay->start();
 }
 
@@ -239,20 +274,31 @@ void on_client_created(wxWebView *webview, const json &params)
     if (webview == nullptr)
         return;
     std::lock_guard<std::mutex> lock(g_pending_mutex);
-    g_pending_clients[webview] = params;
+    g_pending_clients[webview] = PendingConnection{params};
+}
+
+void on_subscribe(wxWebView *webview, const std::string &topic, int qos)
+{
+    if (webview == nullptr)
+        return;
+    std::lock_guard<std::mutex> lock(g_pending_mutex);
+    auto it = g_pending_clients.find(webview);
+    if (it != g_pending_clients.end())
+        it->second.subscriptions.push_back(json{{"topic", topic}, {"qos", qos}});
 }
 
 void on_engine_set(wxWebView *webview, const json &params)
 {
     if (webview == nullptr)
         return;
-    json create;
+    json create, subscriptions;
     {
         std::lock_guard<std::mutex> lock(g_pending_mutex);
         auto it = g_pending_clients.find(webview);
         if (it == g_pending_clients.end())
             return;
-        create = it->second;
+        create        = it->second.create;
+        subscriptions = it->second.subscriptions;
         g_pending_clients.erase(it);
     }
     if (!enabled()) {
@@ -271,8 +317,22 @@ void on_engine_set(wxWebView *webview, const json &params)
     const std::string sn = engine.value("sn", "");
     if (!save_secret(sn, json{{"create", create_secrets}, {"engine", engine_secrets}}.dump()))
         return;
-    wxGetApp().app_config->set(CONFIG_KEY, json{{"create", create}, {"engine", engine}}.dump());
+    wxGetApp().app_config->set(CONFIG_KEY, json{{"create", create}, {"subscribe", subscriptions}, {"engine", engine}}.dump());
     BOOST_LOG_TRIVIAL(warning) << "DeviceReconnect: remembered printer " << sn;
+}
+
+void on_device_filament_info()
+{
+    if (!g_filament_sync_pending)
+        return;
+    g_filament_sync_pending = false;
+    wxGetApp().CallAfter([] {
+        auto reader = std::make_shared<SSWCP_Instance>("", json::object(), json::object(), "", nullptr);
+        if (!reader->apply_cached_device_filament_info() || !wxGetApp().plater())
+            return;
+        BOOST_LOG_TRIVIAL(warning) << "DeviceReconnect: syncing filaments from the printer";
+        wxGetApp().plater()->sidebar().show_sync_filament_dialog(true);
+    });
 }
 
 void forget()
@@ -280,6 +340,7 @@ void forget()
     if (!wxGetApp().app_config || wxGetApp().app_config->get(CONFIG_KEY).empty())
         return;
     wxGetApp().app_config->set(CONFIG_KEY, "");
+    g_filament_sync_pending = false;
     delete_secret();
     BOOST_LOG_TRIVIAL(warning) << "DeviceReconnect: forgot the last printer";
 }
@@ -293,7 +354,13 @@ void on_user_login(const std::string &user_id)
         return;
     std::string stored_user;
     try {
-        stored_user = json::parse(stored_str).value("engine", json::object()).value("userid", "");
+        const json stored = json::parse(stored_str);
+        // Entries from before the topics were recorded would connect without any answers.
+        if (!stored.contains("subscribe")) {
+            forget();
+            return;
+        }
+        stored_user = stored.value("engine", json::object()).value("userid", "");
     } catch (...) {
         return;
     }
