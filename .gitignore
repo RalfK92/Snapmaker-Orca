@@ -52,3 +52,6 @@ CLAUDE.md
 
 # Locally built Flatpak bundles
 *.flatpak
+
+# snapmaker_connection CLI binaries are placed into resources/ locally per platform/architecture and are not tracked
+/resources/snapmaker_connection*
