@@ -100,6 +100,7 @@
 #include "../Utils/GatewayProtocol.hpp"
 #include "../Utils/GatewayService.hpp"
 #include "../Utils/GatewayDevice.hpp"
+#include "FlutterWebDark.hpp"
 #include "../Utils/Http.hpp"
 #include "../Utils/InstanceID.hpp"
 #include "../Utils/SnapLogClient.hpp"
@@ -5690,8 +5691,11 @@ bool GUI_App::start_gateway_service(bool restart)
 
     try {
         Gateway::GatewayService::Dependencies dependencies;
-        const boost::filesystem::path connection_cli_path =
+        boost::filesystem::path connection_cli_path =
             boost::filesystem::path{Slic3r::resources_dir()} / Gateway::ConnectionProcessManager::cli_executable_name();
+        // Run a copy whose web root also holds the dark Flutter files (see FlutterWebDark).
+        if (const std::string dark_cli_path = FlutterWebDark::prepare_gateway_root(connection_cli_path.string()); !dark_cli_path.empty())
+            connection_cli_path = dark_cli_path;
         dependencies.process_manager =
             std::make_shared<Gateway::ConnectionProcessManager>(Gateway::ConnectionProcessManager::Config{connection_cli_path});
         dependencies.http      = std::make_shared<Gateway::LibcurlHttpTransport>();
@@ -5953,9 +5957,13 @@ void GUI_App::register_gateway_notifications()
 
 wxString GUI_App::gateway_web_url(const wxString& page_key) const
 {
-    const std::string url = m_gateway_service ? m_gateway_service->web_url(into_u8(page_key)) : std::string{};
-    if (!url.empty())
+    std::string url = m_gateway_service ? m_gateway_service->web_url(into_u8(page_key)) : std::string{};
+    if (!url.empty()) {
+        // Selects the dark Flutter files that FlutterWebDark added to the gateway's web root.
+        if (dark_mode())
+            url += (url.find('?') == std::string::npos ? "?" : "&") + std::string("dark_mode=1");
         return from_u8(url);
+    }
 
     BOOST_LOG_TRIVIAL(warning)
         << "[FLUTTER_FLOW] [gateway] [url_fallback] page=" << into_u8(page_key) << " port=" << get_page_http_port();

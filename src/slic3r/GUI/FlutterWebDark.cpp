@@ -2,6 +2,7 @@
 
 #include "libslic3r/Utils.hpp"
 
+#include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/nowide/fstream.hpp>
 
@@ -16,6 +17,7 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -399,6 +401,104 @@ std::string apply(Kind kind, const std::string &source_path, std::string content
     case Kind::None: break;
     }
     return content;
+}
+
+namespace {
+
+bool write_file(const boost::filesystem::path &path, const std::string &content)
+{
+    boost::filesystem::create_directories(path.parent_path());
+    boost::nowide::ofstream f(path.string(), std::ios::binary);
+    f.write(content.data(), std::streamsize(content.size()));
+    return bool(f);
+}
+
+// Changes whenever the gateway, flutter_web or the dark mapping change.
+std::string gateway_stamp(const boost::filesystem::path &cli, const boost::filesystem::path &web)
+{
+    namespace fs = boost::filesystem;
+    std::ostringstream stamp;
+    stamp << DARK_JS_SUFFIX << '\n' << fs::file_size(cli) << ' ' << fs::last_write_time(cli) << '\n';
+    std::vector<std::string> lines;
+    for (fs::recursive_directory_iterator it(web), end; it != end; ++it)
+        if (fs::is_regular_file(it->status()))
+            lines.push_back(fs::relative(it->path(), web).generic_string() + ' ' + std::to_string(fs::file_size(it->path())) + ' ' +
+                            std::to_string(fs::last_write_time(it->path())));
+    std::sort(lines.begin(), lines.end());
+    for (const std::string &line : lines)
+        stamp << line << '\n';
+    return stamp.str();
+}
+
+// Write flutter_web from `src` to `dst` together with the files resolve() derives.
+void build_web_root(const boost::filesystem::path &src, const boost::filesystem::path &dst)
+{
+    namespace fs = boost::filesystem;
+    const std::string svg_src = std::string("assets/") + SVG_DIR;
+    for (fs::recursive_directory_iterator it(src), end; it != end; ++it) {
+        if (!fs::is_regular_file(it->status()))
+            continue;
+        const std::string rel = fs::relative(it->path(), src).generic_string();
+        std::string       content;
+        if (!read_file(it->path().string(), content))
+            throw std::runtime_error("cannot read " + it->path().string());
+        if (rel == "index.html") {
+            write_file(dst / rel, patch_index_html(content));
+            continue;
+        }
+        fs::create_directories((dst / rel).parent_path());
+        fs::copy_file(it->path(), dst / rel);
+        if (rel.find('/') == std::string::npos && rel.compare(0, 5, "main.") == 0 && rel.size() > 3 &&
+            rel.compare(rel.size() - 3, 3, ".js") == 0)
+            write_file(dst / (rel.substr(0, rel.size() - 3) + DARK_JS_SUFFIX), remap_bundle(content));
+        else if (rel.compare(0, svg_src.size(), svg_src) == 0)
+            write_file(dst / (std::string("assets/") + SVG_DARK_DIR + rel.substr(svg_src.size())), remap_svg(content));
+    }
+    for (const char *image : DARK_IMAGES) {
+        const Resolved dark = resolve((src / (std::string("assets/") + IMG_DARK_DIR + image)).generic_string());
+        if (fs::exists(dark.path)) {
+            fs::create_directories((dst / "assets" / IMG_DARK_DIR / image).parent_path());
+            fs::copy_file(dark.path, dst / "assets" / IMG_DARK_DIR / image);
+        }
+    }
+}
+
+} // namespace
+
+std::string prepare_gateway_root(const std::string &cli_path)
+{
+#ifdef __linux__
+    namespace fs = boost::filesystem;
+    try {
+        const fs::path cli(cli_path);
+        const fs::path web = cli.parent_path() / "web" / "flutter_web";
+        if (!fs::is_regular_file(cli) || !fs::is_directory(web))
+            return "";
+        const fs::path    root  = fs::path(data_dir()) / "snapmaker_control_dark";
+        const fs::path    exe   = root / cli.filename();
+        const std::string stamp = gateway_stamp(cli, web);
+        std::string       old_stamp;
+        if (fs::is_regular_file(exe) && read_file((root / "stamp.txt").string(), old_stamp) && old_stamp == stamp)
+            return exe.string();
+
+        BOOST_LOG_TRIVIAL(info) << "FlutterWebDark: preparing the gateway web root in " << root.string();
+        const fs::path tmp = root.string() + ".tmp";
+        fs::remove_all(tmp);
+        build_web_root(web, tmp / "web" / "flutter_web");
+        fs::copy_file(cli, tmp / cli.filename()); // keeps the executable permissions
+        write_file(tmp / "stamp.txt", stamp);
+        // A gateway still running from the old copy keeps its files open; replacing the directory is fine on Linux.
+        fs::remove_all(root);
+        fs::rename(tmp, root);
+        return exe.string();
+    } catch (const std::exception &e) {
+        BOOST_LOG_TRIVIAL(error) << "FlutterWebDark: preparing the gateway web root failed: " << e.what();
+        return "";
+    }
+#else
+    (void) cli_path;
+    return "";
+#endif
 }
 
 }}} // namespace Slic3r::GUI::FlutterWebDark
