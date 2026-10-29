@@ -4128,6 +4128,8 @@ void GUI_App::apply_gateway_account(const Gateway::AccountSnapshot& snapshot)
                             << ", nickname_present=" << std::boolalpha << !snapshot.nickname.empty();
     ::Slic3r::SnapLog::v1::SnapLogClient::instance().set_user_token(snapshot.token);
     ::Slic3r::SnapLog::v1::SnapLogClient::instance().set_user_id(snapshot.userid);
+    if (snapshot.is_login)
+        try_reconnect_gateway_device();
 }
 
 void GUI_App::refresh_gateway_account()
@@ -5860,6 +5862,46 @@ void GUI_App::query_gateway_device_objects()
                                });
 }
 
+void GUI_App::remember_gateway_device(const nlohmann::json& params)
+{
+    BOOST_LOG_TRIVIAL(info) << "[gateway][reconnect] device connected: " << params.dump();
+    const std::string serial_number = Gateway::parse_device_sn(params);
+    if (serial_number.empty() || !params.is_object())
+        return;
+    // Only what identifies the device; pin codes and certificates stay in the gateway's store.
+    nlohmann::json device = {{"sn", serial_number}};
+    for (const char* key : {"type", "ip"})
+        if (params.contains(key) && params[key].is_string() && !params[key].get<std::string>().empty())
+            device[key] = params[key];
+    app_config->set("last_connected_device", device.dump());
+}
+
+void GUI_App::try_reconnect_gateway_device()
+{
+    if (m_gateway_reconnect_requested || !m_gateway_service || !app_config->get_bool("reconnect_last_device"))
+        return;
+    nlohmann::json device;
+    try {
+        device = nlohmann::json::parse(app_config->get("last_connected_device"));
+    } catch (...) {
+        return;
+    }
+    if (!device.is_object() || device.value("sn", "").empty())
+        return;
+    // Cloud (WAN) connections go through the account session, so wait for the login.
+    if (device.value("type", "") == "WAN" && !m_gateway_account.is_login)
+        return;
+    m_gateway_reconnect_requested = true;
+
+    BOOST_LOG_TRIVIAL(info) << "[gateway][reconnect] reconnecting to " << device.dump();
+    m_gateway_service->request("action.device.connect", device, [](Gateway::GatewayError error, const nlohmann::json&) {
+        if (error)
+            BOOST_LOG_TRIVIAL(warning) << "[gateway][reconnect] reconnecting to the last printer failed: " << error.message;
+        else
+            BOOST_LOG_TRIVIAL(info) << "[gateway][reconnect] reconnected to the last printer";
+    });
+}
+
 void GUI_App::clear_gateway_device()
 {
     const bool          had_slots  = preset_bundle != nullptr && !preset_bundle->m_connect_machine_info_list.empty();
@@ -5911,8 +5953,10 @@ void GUI_App::register_gateway_notifications()
             refresh_gateway_account();
     });
 
-    m_gateway_service->set_notification_handler("notify.device.connected",
-                                                [this](const nlohmann::json&) { query_gateway_current_device(); });
+    m_gateway_service->set_notification_handler("notify.device.connected", [this](const nlohmann::json& params) {
+        remember_gateway_device(params);
+        query_gateway_current_device();
+    });
     m_gateway_service->set_notification_handler("notify.device.current_changed",
                                                 [this](const nlohmann::json&) { query_gateway_current_device(); });
     m_gateway_service->set_notification_handler("notify.device.object.changed", [this](const nlohmann::json& params) {
@@ -5922,6 +5966,12 @@ void GUI_App::register_gateway_notifications()
     });
     m_gateway_service->set_notification_handler("notify.device.disconnected", [this](const nlohmann::json& params) {
         const std::string serial_number = Gateway::parse_device_sn(params);
+        // On shutdown the gateway disconnects only after Orca closed its socket, so an
+        // intentional disconnect seen here was requested on the Device page.
+        if (params.is_object() && params.value("intentional", false) && !app_config->get("last_connected_device").empty()) {
+            app_config->set("last_connected_device", "");
+            BOOST_LOG_TRIVIAL(info) << "[gateway][reconnect] printer disconnected on purpose, forgot it";
+        }
         if (serial_number.empty() || m_gateway_device.serial_number == serial_number)
             clear_gateway_device();
     });
@@ -5940,6 +5990,7 @@ void GUI_App::register_gateway_notifications()
             return;
 
         refresh_gateway_account();
+        try_reconnect_gateway_device();
 
         const std::string base_url         = m_gateway_service->base_url();
         BOOST_LOG_TRIVIAL(warning) << "[FLUTTER_FLOW] [gateway] [connected] base_url=" << base_url;

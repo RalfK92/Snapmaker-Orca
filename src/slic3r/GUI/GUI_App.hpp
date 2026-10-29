@@ -627,6 +627,10 @@ private:
     void            query_gateway_current_device();
     void            query_gateway_device_objects();
     void            clear_gateway_device();
+    // Reconnect to the last printer on startup: the gateway remembers the device and its
+    // credentials but only connects on request, so ask it once per run.
+    void            remember_gateway_device(const nlohmann::json& params);
+    void            try_reconnect_gateway_device();
     void            apply_gateway_machine_slots(std::vector<ConnectMachineInfo> slots);
     void            clear_gateway_machine_slots();
     void            refresh_gateway_machine_slots_ui();
@@ -835,6 +839,7 @@ private:
     bool                    m_config_corrupted { false };
     std::string             m_open_method;
     Gateway::AccountSnapshot   m_gateway_account;
+    bool                       m_gateway_reconnect_requested{false};
     std::atomic<std::uint64_t> m_gateway_account_refresh_generation{0};
     std::vector<std::thread>   m_gateway_account_refresh_workers;
 
