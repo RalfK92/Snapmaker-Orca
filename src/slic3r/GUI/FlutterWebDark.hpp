@@ -7,8 +7,9 @@
 // The Flutter app ships with a hard-wired light theme. When a page is opened with
 // dark_mode=1, a dark variant derived from the installed flutter_web is served:
 //  - index.html gets a small script that switches the entry point to the dark bundle,
-//  - main.<hash>.dark1.js is main.<hash>.js with every color literal remapped using
-//    the same light -> dark mapping as the native GUI (StateColor.cpp, gDarkColors),
+//  - main.<hash>.dark2.js is main.<hash>.js with every color literal remapped using
+//    the same light -> dark mapping as the native GUI (StateColor.cpp, gDarkColors)
+//    except for black camera / video backdrops,
 //  - assets/assets/svgs_dark1/** are the SVG icons with their colors remapped,
 //  - assets/assets/dark1/** are prebuilt dark placeholder images from
 //    resources/web/flutter_web_dark/, used only while the source image is unchanged

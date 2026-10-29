@@ -27,7 +27,7 @@ namespace {
 
 // Bump when the mapping changes: it is part of the served file names, so WebKit
 // never keeps an outdated dark variant in its cache.
-const char *const DARK_JS_SUFFIX = ".dark1.js";
+const char *const DARK_JS_SUFFIX = ".dark2.js";
 const char *const SVG_DIR        = "assets/svgs/";
 const char *const SVG_DARK_DIR   = "assets/svgs_dark1/";
 const char *const IMG_DARK_DIR   = "assets/dark1/";
@@ -173,10 +173,12 @@ size_t parse_color(const std::string &s, size_t pos, std::string &cls, std::arra
     return q + 1;
 }
 
-void replace_all(std::string &s, const std::string &from, const std::string &to)
+size_t replace_all(std::string &s, const std::string &from, const std::string &to)
 {
-    for (size_t pos = s.find(from); pos != std::string::npos; pos = s.find(from, pos + to.size()))
+    size_t count = 0;
+    for (size_t pos = s.find(from); pos != std::string::npos; pos = s.find(from, pos + to.size()), ++count)
         s.replace(pos, from.size(), to);
+    return count;
 }
 
 uint32_t crc32(const std::string &data)
@@ -222,6 +224,44 @@ std::string prebuilt_image(const std::string &rel, const std::string &source_pat
         return "";
     }
     return dir + rel;
+}
+
+// Name of the constant defined as `=<definition>` in `js` (e.g. "B.u"), or "".
+std::string constant_named(const std::string &js, const std::string &definition, size_t from = 0)
+{
+    const size_t pos = js.find("=" + definition, from);
+    if (pos == std::string::npos)
+        return "";
+    size_t start = pos;
+    while (start > 0 && (is_ident(js[start - 1]) || js[start - 1] == '.')) --start;
+    return js.substr(start, pos - start);
+}
+
+// Black Container backgrounds are camera / video backdrops (black with white text in the
+// light theme too); keep them black instead of turning them light like black text.
+// A Container passes its clipBehavior (Clip.none by default) right before its color.
+void keep_black_backdrops(const std::string &js, std::string &out, const std::string &cls, const std::string &space)
+{
+    const std::string black_value = "new A." + cls + "(1,0,0,0," + space + ")";
+    const std::string black       = constant_named(js, black_value);
+    std::string       clip_none;
+    for (size_t pos = js.find("(0,\"none\")"); pos != std::string::npos && clip_none.empty(); pos = js.find("(0,\"none\")", pos + 1)) {
+        size_t start = pos;
+        while (start > 0 && is_ident(js[start - 1])) --start;
+        if (start < 7 || js.compare(start - 6, 6, "new A.") != 0)
+            continue;
+        const std::string enum_cls = js.substr(start, pos - start);
+        // Clip is the enum whose next value is hardEdge.
+        const size_t next = js.find("=new A." + enum_cls + "(1,\"hardEdge\")", pos);
+        if (next != std::string::npos && next - pos < 64)
+            clip_none = constant_named(js, "new A." + enum_cls + "(0,\"none\")", start - 7);
+    }
+    if (black.empty() || clip_none.empty()) {
+        BOOST_LOG_TRIVIAL(warning) << "FlutterWebDark: black / Clip.none constants not found, backdrops are remapped";
+        return;
+    }
+    const size_t kept = replace_all(out, "," + clip_none + "," + black + ",", "," + clip_none + "," + black_value + ",");
+    BOOST_LOG_TRIVIAL(info) << "FlutterWebDark: kept " << kept << " black backdrops";
 }
 
 } // namespace
@@ -290,6 +330,8 @@ std::string remap_bundle(const std::string &js)
         }
         break;
     }
+
+    keep_black_backdrops(js, out, cls, space);
 
     replace_all(out, std::string("\"") + SVG_DIR, std::string("\"") + SVG_DARK_DIR);
     for (const char *rel : DARK_IMAGES)
@@ -420,10 +462,21 @@ std::string gateway_stamp(const boost::filesystem::path &cli, const boost::files
     std::ostringstream stamp;
     stamp << DARK_JS_SUFFIX << '\n' << fs::file_size(cli) << ' ' << fs::last_write_time(cli) << '\n';
     std::vector<std::string> lines;
-    for (fs::recursive_directory_iterator it(web), end; it != end; ++it)
-        if (fs::is_regular_file(it->status()))
-            lines.push_back(fs::relative(it->path(), web).generic_string() + ' ' + std::to_string(fs::file_size(it->path())) + ' ' +
-                            std::to_string(fs::last_write_time(it->path())));
+    for (fs::recursive_directory_iterator it(web), end; it != end; ++it) {
+        if (!fs::is_regular_file(it->status()))
+            continue;
+        const std::string rel  = fs::relative(it->path(), web).generic_string();
+        std::string       line = rel + ' ' + std::to_string(fs::file_size(it->path())) + ' ' + std::to_string(fs::last_write_time(it->path()));
+        // Flatpak sets every mtime to 0, so also hash the files that change with each release.
+        std::string content;
+        if ((rel == "version.json" || (rel.compare(0, 5, "main.") == 0 && rel.find('/') == std::string::npos)) &&
+            read_file(it->path().string(), content)) {
+            char crc[16];
+            std::snprintf(crc, sizeof(crc), " %08x", crc32(content));
+            line += crc;
+        }
+        lines.push_back(line);
+    }
     std::sort(lines.begin(), lines.end());
     for (const std::string &line : lines)
         stamp << line << '\n';
