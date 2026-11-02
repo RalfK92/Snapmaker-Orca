@@ -182,7 +182,8 @@ public:
     void load_ams_list(std::string const & device, MachineObject* obj);
     std::map<int, DynamicPrintConfig> build_filament_ams_list(MachineObject* obj);
     void sync_ams_list();
-    void show_sync_filament_dialog();
+    // silent: no dialogs for a missing / unsupported printer or empty slots (used after an automatic reconnect).
+    void show_sync_filament_dialog(bool silent = false);
     // Orca
     void show_SEMM_buttons(bool bshow);
     void update_dynamic_filament_list();
@@ -230,7 +231,7 @@ public:
     const std::vector<std::string>& get_bed_type_combo_enum_values() const { return m_bed_type_combo_enum_values; }
 
 private:
-    void continue_sync_filament_dialog(bool got_machine_info, const std::string& machine_type);
+    void continue_sync_filament_dialog(bool got_machine_info, const std::string& machine_type, bool silent = false);
 
     // Applies a nozzle sync query result on the UI thread (async sync-button path).
     void apply_nozzle_sync_result(bool got_machine_info, std::string machine_type,

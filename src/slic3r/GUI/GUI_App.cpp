@@ -4128,8 +4128,6 @@ void GUI_App::apply_gateway_account(const Gateway::AccountSnapshot& snapshot)
                             << ", nickname_present=" << std::boolalpha << !snapshot.nickname.empty();
     ::Slic3r::SnapLog::v1::SnapLogClient::instance().set_user_token(snapshot.token);
     ::Slic3r::SnapLog::v1::SnapLogClient::instance().set_user_id(snapshot.userid);
-    if (snapshot.is_login)
-        try_reconnect_gateway_device();
 }
 
 void GUI_App::refresh_gateway_account()
@@ -5857,6 +5855,11 @@ void GUI_App::query_gateway_device_objects()
                                        apply_gateway_machine_slots(std::move(slots));
                                        refresh_gateway_machine_slots_ui();
                                    }
+                                   if (m_gateway_filament_sync_pending && mainframe != nullptr && mainframe->plater() != nullptr) {
+                                       m_gateway_filament_sync_pending = false;
+                                       BOOST_LOG_TRIVIAL(warning) << "[gateway][reconnect] syncing filaments from the printer";
+                                       mainframe->plater()->sidebar().show_sync_filament_dialog(true);
+                                   }
                                    if (refresh_again)
                                        query_gateway_device_objects();
                                });
@@ -5878,7 +5881,8 @@ void GUI_App::remember_gateway_device(const nlohmann::json& params)
 
 void GUI_App::try_reconnect_gateway_device()
 {
-    if (m_gateway_reconnect_requested || !m_gateway_service || !app_config->get_bool("reconnect_last_device"))
+    if (m_gateway_reconnect_requested || !m_gateway_service || gateway_device_connected() ||
+        !app_config->get_bool("reconnect_last_device"))
         return;
     nlohmann::json device;
     try {
@@ -5888,17 +5892,35 @@ void GUI_App::try_reconnect_gateway_device()
     }
     if (!device.is_object() || device.value("sn", "").empty())
         return;
-    // Cloud (WAN) connections go through the account session, so wait for the login.
-    if (device.value("type", "") == "WAN" && !m_gateway_account.is_login)
-        return;
     m_gateway_reconnect_requested = true;
+    ++m_gateway_reconnect_attempts;
 
-    BOOST_LOG_TRIVIAL(info) << "[gateway][reconnect] reconnecting to " << device.dump();
-    m_gateway_service->request("action.device.connect", device, [](Gateway::GatewayError error, const nlohmann::json&) {
-        if (error)
-            BOOST_LOG_TRIVIAL(warning) << "[gateway][reconnect] reconnecting to the last printer failed: " << error.message;
-        else
-            BOOST_LOG_TRIVIAL(info) << "[gateway][reconnect] reconnected to the last printer";
+    // Orca cannot read the gateway's (encrypted) account frame, so do not wait for a login:
+    // a cloud connect sent before the gateway's cloud session is ready fails and is retried.
+    BOOST_LOG_TRIVIAL(warning) << "[gateway][reconnect] reconnecting to " << device.dump() << ", attempt " << m_gateway_reconnect_attempts;
+    m_gateway_service->request("action.device.connect", device, [this](Gateway::GatewayError error, const nlohmann::json& result) {
+        if (m_is_closing)
+            return;
+        if (!error && result.is_object() && !result.value("success", true))
+            error = {Gateway::GatewayErrorCode::InvalidResponse, "the gateway did not connect the printer"};
+        if (!error) {
+            BOOST_LOG_TRIVIAL(warning) << "[gateway][reconnect] reconnected to the last printer";
+            m_gateway_filament_sync_pending = true;
+            query_gateway_device_objects();
+            return;
+        }
+        BOOST_LOG_TRIVIAL(warning) << "[gateway][reconnect] reconnecting to the last printer failed: " << error.message;
+        if (m_gateway_reconnect_attempts >= 5)
+            return;
+        if (m_gateway_reconnect_timer == nullptr) {
+            // Without an owner the timer sends its events to itself.
+            m_gateway_reconnect_timer = new wxTimer();
+            m_gateway_reconnect_timer->Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+                m_gateway_reconnect_requested = false;
+                try_reconnect_gateway_device();
+            });
+        }
+        m_gateway_reconnect_timer->StartOnce(3000);
     });
 }
 

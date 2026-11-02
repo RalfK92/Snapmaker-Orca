@@ -9245,7 +9245,7 @@ void Sidebar::apply_nozzle_sync_result(bool got_machine_info, std::string machin
             dlg.ShowModal();
         });
 }
-void Sidebar::show_sync_filament_dialog()
+void Sidebar::show_sync_filament_dialog(bool silent)
 {
     if (!wxGetApp().plater())
         return;
@@ -9257,26 +9257,28 @@ void Sidebar::show_sync_filament_dialog()
     const auto      gateway    = wxGetApp().gateway_service();
     const auto      sync_state = p->nozzle_sync_state;
     ScalableButton* button      = p->m_bpButton_sync_filament;
-    std::thread([gateway, sync_state, button]() {
+    std::thread([gateway, sync_state, button, silent]() {
         std::string              machine_type;
         std::string              device_name;
         std::vector<std::string> nozzle_diameters;
         std::vector<std::string> nozzle_volume_types;
         const bool got_machine_info = Gateway::GatewayDevice::query_machine_info(gateway, machine_type, nozzle_diameters, nozzle_volume_types, device_name);
 
-        wxTheApp->CallAfter([sync_state, button, got_machine_info, machine_type = std::move(machine_type)]() {
+        wxTheApp->CallAfter([sync_state, button, got_machine_info, silent, machine_type = std::move(machine_type)]() {
             if (!sync_state->alive.load(std::memory_order_acquire))
                 return;
             if (button != nullptr)
                 button->Enable();
-            sync_state->sidebar->continue_sync_filament_dialog(got_machine_info, machine_type);
+            sync_state->sidebar->continue_sync_filament_dialog(got_machine_info, machine_type, silent);
         });
     }).detach();
 }
 
-void Sidebar::continue_sync_filament_dialog(bool got_machine_info, const std::string& machine_type)
+void Sidebar::continue_sync_filament_dialog(bool got_machine_info, const std::string& machine_type, bool silent)
 {
     if (!got_machine_info) {
+        if (silent)
+            return;
         SyncRichConfirmDialog dlg(this,
             _L("No printer is connected. Please connect your U1 from the Device page before syncing."),
             wxYES_NO);
@@ -9298,6 +9300,8 @@ void Sidebar::continue_sync_filament_dialog(bool got_machine_info, const std::st
         bool is_white_listed_type = white_list_machine_types.find(machine_info.model) != white_list_machine_types.end();
 
         if (!machine_info.model.empty() && !is_white_listed_type) {
+            if (silent)
+                return;
             SyncRichConfirmDialog dlg(this,
                 _L("The connected printer is not U1. Unable to sync filament information. Please switch to U1 and try again."),
                 wxYES_NO);
@@ -9324,6 +9328,8 @@ void Sidebar::continue_sync_filament_dialog(bool got_machine_info, const std::st
         return false;
     };
     if (machineFilamentList.empty() || !nonEmptyFilaments(machineFilamentList)) {
+        if (silent)
+            return;
         SyncRichConfirmDialog dlg(this,
             _L("No filaments detected on the printer. Please preload the filaments before syncing."),
             wxOK);

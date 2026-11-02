@@ -53,6 +53,7 @@
 #define PRIVACY_POLICY_FLAGS "privacy_policy_isagree"
 
 class wxMenuItem;
+class wxTimer;
 class wxMenuBar;
 class wxTopLevelWindow;
 class wxDataViewCtrl;
@@ -628,7 +629,8 @@ private:
     void            query_gateway_device_objects();
     void            clear_gateway_device();
     // Reconnect to the last printer on startup: the gateway remembers the device and its
-    // credentials but only connects on request, so ask it once per run.
+    // credentials but only connects on request, so ask it once per run, then sync the
+    // filaments as after a manual connect.
     void            remember_gateway_device(const nlohmann::json& params);
     void            try_reconnect_gateway_device();
     void            apply_gateway_machine_slots(std::vector<ConnectMachineInfo> slots);
@@ -840,6 +842,9 @@ private:
     std::string             m_open_method;
     Gateway::AccountSnapshot   m_gateway_account;
     bool                       m_gateway_reconnect_requested{false};
+    int                        m_gateway_reconnect_attempts{0};
+    wxTimer*                   m_gateway_reconnect_timer{nullptr};
+    bool                       m_gateway_filament_sync_pending{false};
     std::atomic<std::uint64_t> m_gateway_account_refresh_generation{0};
     std::vector<std::thread>   m_gateway_account_refresh_workers;
 
